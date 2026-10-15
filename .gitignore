@@ -1,0 +1,24 @@
+# Python e ambientes locais
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Operações locais e credenciais
+.operations/
+.env
+.env.*
+!.env.example
+config.local.json
+
+# Backups, logs e fotos geradas pelos comandos de calibração
+*.bak
+*.tmp
+*.log
+calibracao*.jpg
+camera-*.jpg
+teste.jpg
+rosa.jpg
+azul.jpg
+verde.jpg

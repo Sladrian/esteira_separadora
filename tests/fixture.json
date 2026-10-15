@@ -1,0 +1,39 @@
+{
+  "camera": {
+    "width": 320, "height": 240, "fps": 15,
+    "warmup_s": 2.0, "exposure_us": 6000, "analogue_gain": 1.5,
+    "lock_white_balance": true, "colour_gains": null
+  },
+  "vision": {
+    "roi": [60, 90, 200, 60],
+    "occupancy_hsv": [[0, 55, 35], [179, 255, 255]],
+    "min_object_pixels": 100,
+    "min_color_fraction": 0.55,
+    "winner_margin": 0.20,
+    "stable_frames": 3, "empty_frames": 4,
+    "max_occupied_s": 5.0,
+    "colors": {
+      "rosa": {"destination": "direita", "ranges": [[[140, 55, 40], [179, 255, 255]]]},
+      "azul": {"destination": "esquerda", "ranges": [[[95, 80, 40], [130, 255, 255]]]},
+      "verde": {"destination": "reto", "ranges": [[[35, 65, 40], [85, 255, 255]]]}
+    }
+  },
+  "timing": {
+    "min_cap_gap_s": 1.2,
+    "max_lateness_s": 0.08,
+    "camera_timeout_s": 0.8,
+    "max_pending_events": 32
+  },
+  "servos": {
+    "direita": {
+      "gpio": 18, "rest_us": 1500, "push_us": 1800,
+      "travel_s": 2.0, "advance_s": 0.20,
+      "hold_after_arrival_s": 0.25, "return_s": 0.25
+    },
+    "esquerda": {
+      "gpio": 19, "rest_us": 1500, "push_us": 1200,
+      "travel_s": 3.0, "advance_s": 0.20,
+      "hold_after_arrival_s": 0.25, "return_s": 0.25
+    }
+  }
+}
