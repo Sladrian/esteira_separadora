@@ -15,6 +15,10 @@ class SorterFault(RuntimeError):
 
 def load_config(path):
     cfg = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    return validate_config(cfg)
+
+
+def validate_config(cfg):
     def need(condition, message):
         if not condition:
             raise ValueError(message)
@@ -24,6 +28,13 @@ def load_config(path):
                 and math.isfinite(value) and low <= value <= high)
 
     c, v, t, servos = (cfg[k] for k in ("camera", "vision", "timing", "servos"))
+    need(c.get("backend", "auto") in ("auto", "usb", "csi"), "Backend de câmera inválido")
+    device = c.get("usb_device")
+    if device is not None:
+        import re
+        need(isinstance(device, str) and bool(re.fullmatch(r"/dev/video\d+|/dev/v4l/by-id/[^/]+", device)),
+             "usb_device deve ser /dev/videoN ou um caminho /dev/v4l/by-id/...")
+        need(c.get("backend", "auto") != "csi", "usb_device não se aplica ao backend csi")
     for k in ("width", "height"):
         need(isinstance(c[k], int) and 32 <= c[k] <= 1280, "Tamanho de imagem inválido")
     need(number(c["fps"], 5, 30), "FPS deve ficar entre 5 e 30")
@@ -42,6 +53,7 @@ def load_config(path):
     need(number(v["min_color_fraction"], 0.5, 1), "Fração de cor inválida")
     need(number(v["winner_margin"], 0.01, 1), "Margem de cor inválida")
     need(number(v["max_occupied_s"], 1, 60), "Tempo máximo de ocupação inválido")
+    need(number(v.get("tracking_distance_px", 45), 5, 500), "Distância de rastreamento inválida")
     need(set(servos) == {"direita", "esquerda"}, "Configure os dois servos")
     need(len(v["colors"]) == 3, "Configure exatamente três cores")
     need("desconhecida" not in v["colors"], "Nome de cor reservado")
@@ -76,8 +88,6 @@ def load_config(path):
             need(number(s[k], 0.01, 60), k + " inválido")
         need(s["travel_s"] - s["advance_s"] > v["stable_frames"] / c["fps"] + 0.1,
              "Câmera perto demais do servo para confirmar a cor: " + name)
-        need(t["min_cap_gap_s"] >= s["advance_s"] + s["hold_after_arrival_s"] + s["return_s"],
-             "Intervalo de tampinhas menor que o ciclo do servo")
     need(len(set(pins)) == 2, "Os servos precisam de GPIOs diferentes")
     return cfg
 

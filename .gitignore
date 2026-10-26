@@ -11,11 +11,15 @@ venv/
 .env.*
 !.env.example
 config.local.json
+config.notebook.json
+.esteira-*
 
 # Backups, logs e fotos geradas pelos comandos de calibração
 *.bak
 *.tmp
 *.log
+*.log.*
+*.atualizando
 calibracao*.jpg
 camera-*.jpg
 teste.jpg

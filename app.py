@@ -8,8 +8,9 @@ from pathlib import Path
 import signal
 import sys
 import time
+import copy
 
-from core import Controller, Debouncer, SorterFault, load_config
+from core import SorterFault, load_config
 from hardware import Camera, Servos
 
 BASE = Path(__file__).resolve().parent
@@ -40,7 +41,9 @@ def save_config(path, cfg):
 
 def run(cfg, args):
     import cv2
-    from vision import Vision, annotate
+    from continuous import ContinuousController, Tracker
+    from vision import Vision, annotate_objects
+    from settings import changed_config
     cv2.setNumThreads(1)
     stop = False
     def stop_signal(*_):
@@ -49,54 +52,123 @@ def run(cfg, args):
     signal.signal(signal.SIGTERM, stop_signal)
     signal.signal(signal.SIGINT, stop_signal)
     with ExitStack() as stack:
-        camera = Camera(cfg["camera"])
-        stack.callback(camera.close)
-        servos = Servos(cfg["servos"], dry_run=not args.live)
+        cfg = copy.deepcopy(cfg)
+        servos = Servos(cfg["servos"], dry_run=not args.live, tolerate_errors=True)
         stack.callback(servos.close)
-        # Recolhe os braços antes de começar. Ligue a esteira somente após PRONTO.
         time.sleep(max(s["return_s"] for s in cfg["servos"].values()))
-        control = Controller(cfg, servos)
+        control = ContinuousController(cfg, servos)
         control.start()
         stack.callback(control.close)
-        detector, debouncer = Vision(cfg["vision"]), Debouncer(cfg["vision"])
-        last_sensor_ts = None
+        detector, tracker = Vision(cfg["vision"]), Tracker(cfg["vision"])
+        detections = []
+        panel = None
+        def apply_changes(changes):
+            nonlocal cfg, detector, tracker
+            updated = changed_config(cfg, changes)
+            roi_changed = updated["vision"]["roi"] != cfg["vision"]["roi"]
+            positions_changed = any(updated["servos"][side][key] != cfg["servos"][side][key]
+                                    for side in cfg["servos"] for key in ("rest_us", "push_us"))
+            # Posições ou ROI só mudam após a última passagem alcançar as estações.
+            with control.condition:
+                if (roi_changed or positions_changed) and (detections or control.snapshot()["busy"]):
+                    raise ValueError("Pare de alimentar e aguarde a faixa e os acionamentos ficarem vazios para mudar área/posições")
+                save_config(args.config, updated)
+                cfg = updated
+                control.reconfigure(cfg)
+                servos.cfg = cfg["servos"]
+                if positions_changed:
+                    servos.park()
+                if roi_changed:
+                    detector, tracker = Vision(cfg["vision"]), Tracker(cfg["vision"])
+                log.info("Ajustes salvos; novos tempos valem para as próximas tampinhas")
+            return cfg
+
+        if args.web:
+            from panel import Panel
+            panel = Panel(args.port, cfg, apply_changes)
+            stack.callback(panel.close)
+            log.info("PAINEL: %s", panel.url)
+            log.info("Via SSH no notebook: ssh -L %s:127.0.0.1:%s admin@IP_DO_RASPBERRY", args.port, args.port)
         started = time.monotonic()
         report_at = started + 10
+        publish_at = started
         frames = 0
-        log.info("PRONTO | %s | comece com a faixa vazia; Ctrl+C encerra",
-                 "SERVOS ATIVOS" if args.live else "SIMULAÇÃO, sem GPIO")
-        while not stop:
-            frame, captured_at, meta = camera.read()
-            if stop:
-                break
-            sensor_ts = meta.get("SensorTimestamp")
-            if sensor_ts is None or (last_sensor_ts is not None and sensor_ts <= last_sensor_ts):
-                raise SorterFault("Timestamp da câmera ausente ou repetido; pare a esteira")
-            last_sensor_ts = sensor_ts
-            control.beat()
-            label, fractions, _, _ = detector.inspect(frame)
-            event = debouncer.update(label, captured_at)
-            if event:
-                color, first_seen = event
-                destination = control.submit(color, first_seen)
-                log.info("Tampinha %s -> %s | reconhecida, destino programado", color, destination)
-                if color == "desconhecida":
-                    log.warning("Cor sem confiança: segue reto. Verifique o recipiente final")
-            frames += 1
-            if time.monotonic() >= report_at:
-                log.info("FPS médio %.1f | contagens de detecção %s", frames/(time.monotonic()-started),
-                         dict(control.counts))
-                report_at = time.monotonic()+10
+        camera = None
+        camera_cfg = copy.deepcopy(cfg["camera"])
+        last_sensor_ts = last_captured_at = None
+        try:
+            while not stop and not (args.seconds and time.monotonic()-started >= args.seconds):
+                control.check()
+                try:
+                    if camera is None:
+                        camera = Camera(camera_cfg)
+                        # A reconexão reutiliza a mesma fonte e a mesma calibração.
+                        camera_cfg["backend"] = camera.kind
+                        if camera.kind == "usb":
+                            camera_cfg["usb_device"] = camera.camera.device
+                        tracker = Tracker(cfg["vision"])
+                        last_sensor_ts = last_captured_at = None
+                        log.info("PRONTO | %s | comece com faixa vazia; execução contínua; Ctrl+C encerra",
+                                 "MODO REAL: confira estado dos canais" if args.live else "SIMULAÇÃO, sem GPIO")
+                    frame, captured_at, meta = camera.read()
+                    if stop:
+                        break
+                    sensor_ts = meta.get("FrameSequence", meta.get("SensorTimestamp"))
+                    if sensor_ts is None or (last_sensor_ts is not None and sensor_ts <= last_sensor_ts):
+                        raise SorterFault("Identificador de quadro ausente ou repetido")
+                except Exception as exc:
+                    control.pause(str(exc))
+                    if panel:
+                        panel.message("Sem câmera; tentando reconectar. Confira a correia.")
+                    if camera is not None:
+                        try:
+                            camera.close()
+                        except Exception:
+                            log.exception("Falha ao liberar câmera")
+                    camera = None
+                    # Espera interrompível; nunca acumula movimentos durante reconexão.
+                    until = time.monotonic()+3
+                    while not stop and time.monotonic() < until:
+                        if args.seconds and time.monotonic()-started >= args.seconds:
+                            break
+                        time.sleep(.1)
+                    continue
+                if last_captured_at is not None and captured_at-last_captured_at > cfg["timing"]["camera_timeout_s"]:
+                    control.pause("lacuna na captura")
+                    tracker = Tracker(cfg["vision"])
+                last_sensor_ts, last_captured_at = sensor_ts, captured_at
+                control.beat()
+                detections = detector.detect(frame)
+                for color, first_seen in tracker.update(detections, captured_at):
+                    destination, result = control.submit(color, first_seen)
+                    log.info("Tampinha %s -> %s | %s", color, destination, result)
+                frames += 1
+                now = time.monotonic()
+                if now >= report_at:
+                    log.info("FPS médio %.1f | estado %s | servos %s", frames/max(.01, now-started),
+                             control.snapshot(), servos.status())
+                    report_at = now+10
+                if panel:
+                    panel.process_commands()
+                    if now >= publish_at:
+                        state = control.snapshot()
+                        state.update(message="Leitura ativa" if tracker.ready else "Aguardando faixa vazia para iniciar",
+                                     fps=round(frames/max(.01, now-started), 1), servos=servos.status())
+                        if state["suspended"]:
+                            state["message"] = "Leitura ativa; aguardando as estações liberarem para voltar a desviar"
+                        panel.publish(annotate_objects(frame, cfg["vision"]["roi"], detections), state)
+                        publish_at = now+.25
+                if args.preview:
+                    cv2.imshow("Esteira - Q para sair", annotate_objects(frame, cfg["vision"]["roi"], detections))
+                    if cv2.waitKey(1) & 0xff == ord("q"):
+                        stop = True
+        finally:
+            control.pause("encerramento")
+            if camera is not None:
+                camera.close()
             if args.preview:
-                cv2.imshow("Esteira - Q para sair", annotate(frame, cfg["vision"]["roi"], label, fractions))
-                if cv2.waitKey(1) & 0xff == ord("q"):
-                    stop = True
-            if args.seconds and time.monotonic()-started >= args.seconds:
-                stop = True
-        control.check()
-        log.info("Encerrando; detecções: %s. Pare a esteira antes de reiniciar.", dict(control.counts))
-        if args.preview:
-            cv2.destroyAllWindows()
+                cv2.destroyAllWindows()
+        log.info("Encerrando; estado %s. Pare a correia antes de reiniciar.", control.snapshot())
 
 
 def photograph(cfg, args):
@@ -108,6 +180,8 @@ def photograph(cfg, args):
         stack.callback(camera.close)
         frame, _, meta = camera.read()
         if args.command == "balance":
+            if camera.kind == "usb":
+                raise SorterFault("USB: ajuste/fixe o branco com os controles UVC da câmera e depois execute learn para as três cores")
             gains = meta.get("ColourGains")
             if gains is None:
                 raise SorterFault("Balanço de branco não disponível")
@@ -125,13 +199,13 @@ def photograph(cfg, args):
                 raise ValueError("Cor não configurada: " + args.color)
             ranges = learn_ranges(hsv, mask, cfg["vision"]["min_object_pixels"])
             cfg["vision"]["colors"][args.color]["ranges"] = ranges
-            if cfg["camera"].get("colour_gains") is None:
+            if cfg["camera"].get("colour_gains") is None and meta.get("ColourGains") is not None:
                 cfg["camera"]["colour_gains"] = list(meta["ColourGains"])
-            save_config(args.config, cfg)
             label, fractions, _, _ = Vision(cfg["vision"]).inspect(frame)
-            log.info("Faixas de %s salvas: %s | classificação após ajuste: %s", args.color, ranges, label)
             if label != args.color:
-                log.warning("Amostra não ficou distinta das outras cores; ajuste as faixas e repita")
+                raise ValueError("Amostra não ficou distinta das outras cores; configuração preservada, confira a tampinha e a luz")
+            save_config(args.config, cfg)
+            log.info("Faixas de %s salvas: %s | classificação após ajuste: %s", args.color, ranges, label)
         if np.count_nonzero(mask):
             log.info("HSV mediano do objeto: %s", np.median(hsv[mask > 0], axis=0).tolist())
         path = Path(args.output)
@@ -148,6 +222,17 @@ def main(argv=None):
     p.add_argument("--live", action="store_true", help="Aciona os servos físicos")
     p.add_argument("--preview", action="store_true", help="Exige ambiente gráfico; desnecessário no Lite")
     p.add_argument("--seconds", type=float, default=0, help="0 = até Ctrl+C")
+    p.add_argument("--web", action="store_true", help="Painel da câmera e ajustes no navegador via túnel SSH")
+    p.add_argument("--port", type=int, default=8080, help="Porta local do painel (padrão 8080)")
+    p.add_argument("--log-file", help="Registro com rotação: 2 MB por arquivo, três arquivos")
+    p = sub.add_parser("ajustar", help="Salva área e tempos sem editar JSON; encerre run antes")
+    p.add_argument("--roi", nargs=4, type=int, metavar=("X", "Y", "LARGURA", "ALTURA"))
+    p.add_argument("--servo", choices=("direita", "esquerda"))
+    for name in ("tempo", "antecipacao", "permanencia", "retorno"):
+        p.add_argument("--"+name, type=float)
+    p.add_argument("--recolhido", type=int)
+    p.add_argument("--desvio", type=int)
+    sub.add_parser("config", help="Mostra área, GPIO e tempos salvos")
     p = sub.add_parser("photo", help="Uma foto anotada, sem movimentar os servos")
     p.add_argument("--output", default="calibracao.jpg")
     p = sub.add_parser("learn", help="Aprende a faixa HSV de uma tampinha parada na ROI")
@@ -161,17 +246,26 @@ def main(argv=None):
     sub.add_parser("check", help="Valida config, espaço e bibliotecas; não aciona GPIO")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
+    if args.command == "run" and args.log_file:
+        from logging.handlers import RotatingFileHandler
+        handler = RotatingFileHandler(args.log_file, maxBytes=2_000_000, backupCount=2, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logging.getLogger().addHandler(handler)
     try:
         cfg = load_config(args.config)
+        if args.command == "config":
+            print(json.dumps({"roi": cfg["vision"]["roi"], "servos": cfg["servos"]}, indent=2, ensure_ascii=False))
+            return 0
         if args.command == "check":
             import shutil
             import cv2
             import numpy
-            import picamera2
+            if cfg["camera"].get("backend", "auto") == "csi":
+                import picamera2
             import pigpio
             free = shutil.disk_usage(BASE).free/(1024**3)
             print(f"Config OK | OpenCV {cv2.__version__} | NumPy {numpy.__version__} | livre {free:.2f} GiB")
-            print("Imports Picamera2/pigpio OK. Câmera e GPIO ainda precisam de testes físicos.")
+            print("Config e pigpio OK. Picamera2 é necessário para CSI. Câmera e GPIO exigem testes físicos.")
             if free < 1:
                 log.warning("Menos de 1 GiB livre; libere espaço antes de instalar atualizações")
             return 0
@@ -179,9 +273,27 @@ def main(argv=None):
             raise ValueError("Neste projeto use pulsos entre 1000 e 2000 us")
         if args.command == "run" and args.seconds < 0:
             raise ValueError("--seconds não pode ser negativo")
+        if args.command == "run" and not 1 <= args.port <= 65535:
+            raise ValueError("Porta inválida")
         with process_lock():
             if args.command == "run":
                 run(cfg, args)
+            elif args.command == "ajustar":
+                from settings import changed_config
+                fields = {key: getattr(args, name) for name, key in {
+                    "tempo": "travel_s", "antecipacao": "advance_s", "permanencia": "hold_after_arrival_s",
+                    "retorno": "return_s", "recolhido": "rest_us", "desvio": "push_us"}.items()
+                          if getattr(args, name) is not None}
+                if fields and not args.servo:
+                    raise ValueError("Informe --servo direita ou --servo esquerda")
+                changes = {"servos": {args.servo: fields}} if fields else {}
+                if args.roi is not None:
+                    changes["roi"] = args.roi
+                if not changes:
+                    raise ValueError("Informe --roi ou --servo com um ajuste de tempo/posição")
+                cfg = changed_config(cfg, changes)
+                save_config(args.config, cfg)
+                log.info("Ajustes salvos. ROI: %s | servos: %s", cfg["vision"]["roi"], cfg["servos"])
             elif args.command == "servo":
                 servos = Servos(cfg["servos"], dry_run=not args.live)
                 try:

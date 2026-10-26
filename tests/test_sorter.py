@@ -259,7 +259,7 @@ class ConfigurationTests(unittest.TestCase):
         from hardware import Camera
         module = types.ModuleType("picamera2")
         module.Picamera2 = type("Picamera2", (), {"global_camera_info": staticmethod(lambda: [])})
-        with patch.dict(sys.modules, {"picamera2": module}):
+        with patch.dict(sys.modules, {"picamera2": module}), patch("hardware.usb_cameras", return_value=[]):
             with self.assertRaisesRegex(SorterFault, "Nenhuma câmera reconhecida"):
                 Camera(CFG["camera"])
 

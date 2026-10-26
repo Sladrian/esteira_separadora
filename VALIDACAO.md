@@ -1,6 +1,10 @@
 # Validação desta entrega
 
-**Resultado: 27 testes automáticos passaram diretamente no Raspberry Pi 3B.**
+**Validação histórica inicial: 27 testes automáticos passaram diretamente no Raspberry Pi 3B.**
+
+A atualização contínua de 19/10/2026 tem testes adicionais no notebook, incluindo
+GPIO e câmeras simulados e requisições reais ao painel local. Instalação no Pi e
+validação física dos servos ainda estão pendentes. Veja TESTE-NA-ESTEIRA.md.
 
 Execução no Raspberry do projeto (acesso SSH), em sistema Trixie/aarch64,
 com Python 3.13.5, OpenCV 4.10.0, NumPy 2.2.4 e Picamera2 0.3.37. O daemon pigpiod

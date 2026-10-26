@@ -1,12 +1,15 @@
 # Esteira separadora de tampinhas — Raspberry Pi 3B
 
+Para a rotina contínua de 19/10/2026 e seus comandos de painel/tempos/área,
+consulte primeiro [TESTE-NA-ESTEIRA.md](TESTE-NA-ESTEIRA.md).
+
 Projeto de software para Raspberry Pi 3B, microSD de 16 GB, Raspberry Pi OS Lite,
 câmera CSI compatível com Picamera2 e dois microservos posicionais SG90.
 
 Configuração inicial: **rosa → direita; azul → esquerda; verde → reto**.
 Você pode trocar as saídas no `config.json`.
 
-O software foi instalado e os 27 testes automáticos passaram no seu Raspberry Pi 3B,
+Na instalação inicial, 27 testes automáticos passaram no seu Raspberry Pi 3B,
 com Raspberry Pi OS baseado no Debian 13/Trixie. A câmera OV5647 foi reconhecida e
 testada em 320 × 240. O funcionamento da separação física ainda depende de calibrar
 imagem, servos e tempo de percurso.
@@ -17,11 +20,13 @@ Os SG90 e as espátulas ainda não foram acionados nesta validação.
 - Captura 320 × 240 a 15 quadros/s como configuração inicial; desempenho real deve ser medido no Pi.
 - Processa somente um recorte de 200 × 60 pixels com OpenCV/HSV, sem rede neural.
 - Confirma a mesma cor em três quadros e conta uma vez por passagem.
-- Exige quatro quadros vazios para aceitar a próxima tampinha.
+- Exige faixa vazia ao iniciar; depois rastreia componentes separados, mesmo com outra tampinha visível.
 - Agenda o movimento do servo sem pausar a captura da câmera.
 - Reserva tempo de passagem nas duas estações, inclusive para a tampinha verde.
 - Executa por terminal, aprende cores de amostras e salva fotos apenas quando solicitado.
-- Interrompe o processamento em erros de câmera, excesso de objetos, fila cheia ou acionamento atrasado.
+- Mantém a leitura diante de desconhecidas, múltiplos componentes, conflitos e falhas de servo.
+- Cancela movimentos em falhas de câmera e tenta reconectar à mesma fonte.
+- Permite ajustar a área e os tempos em um painel local opcional, sem desktop no Pi.
 
 As contagens representam **detecções e destinos programados**. Não há sensor para
 confirmar que a tampinha realmente caiu no recipiente.
@@ -274,8 +279,9 @@ python3 app.py run --live
 ```
 
 Espere aparecer **PRONTO**, mantenha a faixa vazia inicialmente e só depois comece
-a alimentar. Comece com 2 s entre tampinhas. O limite configurado é 1,2 s entre
-detecções; isso é uma proteção inicial, **não uma taxa de produção garantida**.
+a alimentar. Comece com 2 s entre tampinhas. A rotina contínua não interrompe mais
+por intervalo global de 1,2 s; avalia cada janela de passagem nos braços e cancela
+desvios conflitantes, mantendo a captura. Isso não garante a separação de peças próximas.
 Inclua o comprimento da tampinha e a extensão da ROI no espaçamento físico.
 
 Ctrl+C encerra o software. Pare também a correia. Em uma falha detectada, o programa
@@ -284,7 +290,7 @@ da esteira**. Uma queda de energia ou travamento total do sistema não permite
 garantir a posição dos braços; interrompa a alimentação/comando da correia.
 
 Tampinhas juntas da mesma cor podem parecer um só objeto e gerar apenas uma contagem.
-O programa rejeita múltiplos componentes separados, mas não substitui um alimentador
+O programa rastreia múltiplos componentes separados, mas não substitui um alimentador
 que garanta separação física. Não acrescente tampinhas durante reinicializações.
 
 ## 10. Validar a montagem
@@ -303,7 +309,7 @@ Os testes automáticos cobrem lógica e imagens artificiais, não os ensaios aci
 
 ## 11. Limites de memória e armazenamento
 
-Não há servidor web, interface gráfica obrigatória, modelo de IA ou gravação contínua.
+Há painel web local opcional com `--web`; não exige desktop no Pi, rede neural ou gravação contínua.
 O programa usa buffers limitados e guarda no máximo 32 eventos pendentes por padrão.
 O quadro BGR de 320 × 240 ocupa cerca de 225 KiB; Picamera2, libcamera, OpenCV e
 buffers internos usam memória adicional. Esse valor não é o consumo total de RAM.
