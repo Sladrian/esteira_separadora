@@ -41,17 +41,43 @@ class MotorTests(unittest.TestCase):
         self.assertEqual(pi.write.call_args_list[1].args, (22, 0))
         self.assertTrue(motor.status()["available"])
 
-    def test_start_requires_fresh_camera_and_empty_start(self):
+    def test_start_requires_fresh_camera_but_allows_occupied_start(self):
         motor, pi = self.make_motor()
         with self.assertRaises(ValueError):
             motor.command("start", 30)
         motor.beat(False)
-        with self.assertRaises(ValueError):
-            motor.command("start", 30)
-        motor.beat(True)
         motor.command("start", 30)
         pi.set_PWM_dutycycle.assert_called_with(17, 300)
         self.assertTrue(motor.status()["running"])
+
+    def test_motor_commands_cancel_previous_schedules_without_empty_gate(self):
+        import threading
+        from app import command_motor
+        from continuous import ContinuousController
+        motor, pi = self.make_motor({"enabled": True, "direction_control": "fixed"})
+        motor.beat(False)
+        control = ContinuousController(CFG, Mock())
+        control.submit("rosa", time.monotonic())
+        self.assertTrue(control.queue)
+        reset = threading.Event()
+        self.assertTrue(command_motor(control, motor, reset, "start", 30)["running"])
+        self.assertTrue(reset.is_set())
+        self.assertEqual(control.queue, [])
+        self.assertEqual(control.passages, [])
+        self.assertLessEqual(control.inhibit_until, time.monotonic())
+        control.submit("azul", time.monotonic())
+        command_motor(control, motor, reset, "speed", 40)
+        self.assertEqual(control.queue, [])
+        pi.set_PWM_dutycycle.assert_called_with(17, 400)
+
+    def test_tracker_accepts_present_cap_after_explicit_start(self):
+        from continuous import Tracker
+        tracker = Tracker(CFG["vision"], require_empty=False)
+        detection = {"label": "azul", "center": (100, 100)}
+        events = []
+        for index in range(CFG["vision"]["stable_frames"]+2):
+            events.extend(tracker.update([detection], index/15))
+        self.assertEqual(events, [("azul", 0)])
 
     def test_speed_change_stop_and_no_automatic_restart(self):
         motor, pi = self.make_motor()

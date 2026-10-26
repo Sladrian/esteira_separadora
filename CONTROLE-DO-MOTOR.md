@@ -82,10 +82,10 @@ Sem `--live`, o controle de motor também é simulado, sem GPIO.
 
 No painel:
 
-1. Aguarde a câmera ficar ativa e a faixa vazia.
+1. Aguarde a câmera ficar ativa. Pode haver tampinhas na faixa ao ligar.
 2. Escolha o percentual e clique em **Ligar esteira**.
-3. Use **Aplicar velocidade** para mudar o percentual com faixa e janelas dos
-   braços vazias. Não mude a velocidade com tampinhas em trânsito pela pista.
+3. Use **Aplicar velocidade** para mudar o percentual, inclusive com objetos na
+   faixa. Desvios pendentes são cancelados e o rastreamento reinicia.
 4. **Parar esteira** zera o PWM sem esperar pela fila de ajustes da câmera e
    cancela movimentos pendentes dos servos. Pode haver parada por inércia.
 
@@ -95,7 +95,7 @@ automaticamente. Após parar, retirar tampinhas em trânsito evita reutilizar um
 referência temporal que deixou de valer.
 
 Se o motor estiver configurado e parado, o reconhecimento continua, mas novas
-leituras não programam desvios. Ao ligar, o rastreamento é reiniciado com faixa vazia.
+leituras não programam desvios. Ao ligar, o rastreamento reinicia aceitando os objetos já presentes.
 
 ## Perda de câmera e encerramento
 

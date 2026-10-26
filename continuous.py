@@ -12,12 +12,12 @@ log = logging.getLogger("esteira")
 
 class Tracker:
     """Associa componentes por posição prevista; uma decisão por trajetória visível."""
-    def __init__(self, cfg):
+    def __init__(self, cfg, require_empty=True):
         self.cfg = cfg
         self.tracks = {}
         self.next_id = 0
         self.empty = 0
-        self.ready = False
+        self.ready = not require_empty
 
     def update(self, detections, now):
         events = []
@@ -142,6 +142,12 @@ class ContinuousController:
             # fila vazia, exigido pelo chamador. Reservas existentes são mantidas.
             self.cfg = copy.deepcopy(cfg)
             self.condition.notify_all()
+
+    def reset_schedule(self, reason):
+        """Uma partida/mudança manual invalida os tempos anteriores à ação."""
+        with self.condition:
+            self.pause(reason)
+            self.inhibit_until = time.monotonic()
 
     def snapshot(self):
         with self.condition:

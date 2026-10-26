@@ -40,6 +40,23 @@ def save_config(path, cfg):
     tmp.replace(path)
 
 
+def command_motor(control, motor, reset_tracking, action, percent):
+    if action == "stop":
+        state = motor.command("stop")
+        reset_tracking.set()
+        control.pause("parada da esteira pelo painel")
+        return state
+    if action not in ("start", "speed"):
+        raise ValueError("Ação do motor inválida")
+    with control.condition:
+        # O motor pode partir/mudar com objetos presentes. Eventos calculados
+        # com a velocidade anterior são cancelados antes de liberar a fila.
+        state = motor.command(action, percent)
+        control.reset_schedule("velocidade alterada; tempos anteriores cancelados")
+        reset_tracking.set()
+        return state
+
+
 def run(cfg, args):
     import cv2
     from continuous import ContinuousController, Tracker
@@ -69,21 +86,7 @@ def run(cfg, args):
         panel = None
         reset_tracking = threading.Event()
         def motor_command(action, percent):
-            if action == "stop":
-                # Zera PWM antes de esperar pelo controle de servos/captura.
-                state = motor.command("stop")
-                reset_tracking.set()
-                control.pause("parada da esteira pelo painel")
-                return state
-            if action not in ("start", "speed"):
-                raise ValueError("Ação do motor inválida")
-            with control.condition:
-                if detections or control.snapshot()["busy"]:
-                    raise ValueError("Aguarde a faixa e os acionamentos ficarem vazios para mudar a velocidade")
-                state = motor.command(action, percent)
-                reset_tracking.set()
-                control.pause("velocidade da esteira alterada; confira os tempos de percurso")
-                return state
+            return command_motor(control, motor, reset_tracking, action, percent)
 
         def apply_changes(changes):
             nonlocal cfg, detector, tracker
@@ -162,7 +165,7 @@ def run(cfg, args):
                     control.pause("lacuna na captura")
                     tracker = Tracker(cfg["vision"])
                 if reset_tracking.is_set():
-                    tracker = Tracker(cfg["vision"])
+                    tracker = Tracker(cfg["vision"], require_empty=not motor.status()["running"])
                     reset_tracking.clear()
                 last_sensor_ts, last_captured_at = sensor_ts, captured_at
                 control.beat()
@@ -186,7 +189,8 @@ def run(cfg, args):
                     panel.process_commands()
                     if now >= publish_at:
                         state = control.snapshot()
-                        state.update(message="Leitura ativa" if tracker.ready else "Aguardando faixa vazia para iniciar",
+                        state.update(message="Leitura ativa" if tracker.ready else (
+                            "Câmera ativa; pode ligar a esteira com objetos na faixa" if motor.cfg["enabled"] else "Aguardando faixa vazia para iniciar"),
                                      fps=round(frames/max(.01, now-started), 1), servos=servos.status())
                         if state["suspended"]:
                             state["message"] = "Leitura ativa; aguardando as estações liberarem para voltar a desviar"

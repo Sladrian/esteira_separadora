@@ -118,8 +118,8 @@ class Motor:
             if percent == 0:
                 self.stop("Velocidade zero")
                 return self.status()
-            if self.last_frame is None or time.monotonic()-self.last_frame > self.timeout or not self.ready:
-                raise ValueError("Aguarde a câmera ativa e a faixa vazia antes de ligar/alterar a velocidade")
+            if self.last_frame is None or time.monotonic()-self.last_frame > self.timeout:
+                raise ValueError("Aguarde a câmera ativa antes de ligar/alterar a velocidade")
             if action == "speed" and not self.running:
                 raise ValueError("Motor parado; use o botão Ligar")
             try:
