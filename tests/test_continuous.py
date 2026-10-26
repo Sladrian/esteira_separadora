@@ -3,6 +3,7 @@ import copy
 import json
 from pathlib import Path
 import sys
+import signal
 import tempfile
 import threading
 import time
@@ -230,25 +231,42 @@ class HardwareAndSettingsTests(unittest.TestCase):
         cfg = copy.deepcopy(CFG)
         for settings in cfg["servos"].values():
             settings["return_s"] = .01
+        # O relógio da aplicação é simulado, sem substituir o relógio usado pela
+        # thread de servos. A espera de reconexão não depende da velocidade do Pi.
+        clock = SimpleNamespace(now=time.monotonic())
+        clock.monotonic = lambda: clock.now
+        def sleep(seconds):
+            clock.now += seconds
+        clock.sleep = sleep
+        handlers = {}
         count = 0
         def read():
             nonlocal count
-            time.sleep(.006)
+            clock.now += 1/15
             count += 1
             if count == 15:
                 raise OSError("câmera desconectada")
+            if count == 28:
+                handlers[signal.SIGINT]()
             image = scene() if count < 6 or 16 <= count < 22 else scene([(120, 160), (200, 110)])
-            return image, time.monotonic(), {"FrameSequence": count}
-        camera = Mock(kind="csi")
-        camera.read.side_effect = read
-        args = SimpleNamespace(live=False, web=False, preview=False, seconds=3.3, config="unused")
-        with patch("app.Camera", return_value=camera) as factory, patch("app.signal.signal"), \
+            return image, clock.now, {"FrameSequence": count}
+        cameras = [Mock(kind="csi"), Mock(kind="csi")]
+        for camera in cameras:
+            camera.read.side_effect = read
+        # O limite usa o relógio simulado somente como proteção contra loop; o
+        # encerramento normal é disparado após reconhecer cores na segunda câmera.
+        args = SimpleNamespace(live=False, web=False, preview=False, seconds=30, config="unused")
+        with patch("app.Camera", side_effect=cameras) as factory, patch("app.time", clock), \
+                patch("app.signal.signal", side_effect=lambda signum, handler: handlers.update({signum: handler})), \
                 self.assertLogs("esteira", level="INFO") as logs:
             run(cfg, args)
-        self.assertGreaterEqual(factory.call_count, 2)
-        self.assertTrue(any("Tampinha rosa" in line for line in logs.output))
-        self.assertTrue(any("Tampinha azul" in line for line in logs.output))
-        self.assertGreaterEqual(camera.close.call_count, 2)
+        self.assertEqual(factory.call_count, 2)
+        self.assertEqual(count, 28)
+        for color in ("rosa", "azul"):
+            self.assertEqual(sum(f"Tampinha {color}" in line for line in logs.output), 2)
+        for camera in cameras:
+            camera.close.assert_called_once()
+        self.assertEqual(factory.call_args_list[1].args[0]["backend"], "csi")
 
 
 if __name__ == "__main__":
