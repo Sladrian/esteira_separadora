@@ -89,6 +89,9 @@ def validate_config(cfg):
         need(s["travel_s"] - s["advance_s"] > v["stable_frames"] / c["fps"] + 0.1,
              "Câmera perto demais do servo para confirmar a cor: " + name)
     need(len(set(pins)) == 2, "Os servos precisam de GPIOs diferentes")
+    if "motor" in cfg:
+        from motor import validate_motor
+        validate_motor(cfg["motor"], servos)
     return cfg
 
 

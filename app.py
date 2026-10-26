@@ -9,6 +9,7 @@ import signal
 import sys
 import time
 import copy
+import threading
 
 from core import SorterFault, load_config
 from hardware import Camera, Servos
@@ -44,6 +45,7 @@ def run(cfg, args):
     from continuous import ContinuousController, Tracker
     from vision import Vision, annotate_objects
     from settings import changed_config
+    from motor import Motor
     cv2.setNumThreads(1)
     stop = False
     def stop_signal(*_):
@@ -55,6 +57,9 @@ def run(cfg, args):
         cfg = copy.deepcopy(cfg)
         servos = Servos(cfg["servos"], dry_run=not args.live, tolerate_errors=True)
         stack.callback(servos.close)
+        motor = Motor(cfg.get("motor", {}), cfg["servos"], dry_run=not args.live,
+                      timeout=cfg["timing"]["camera_timeout_s"])
+        stack.callback(motor.close)
         time.sleep(max(s["return_s"] for s in cfg["servos"].values()))
         control = ContinuousController(cfg, servos)
         control.start()
@@ -62,6 +67,24 @@ def run(cfg, args):
         detector, tracker = Vision(cfg["vision"]), Tracker(cfg["vision"])
         detections = []
         panel = None
+        reset_tracking = threading.Event()
+        def motor_command(action, percent):
+            if action == "stop":
+                # Zera PWM antes de esperar pelo controle de servos/captura.
+                state = motor.command("stop")
+                reset_tracking.set()
+                control.pause("parada da esteira pelo painel")
+                return state
+            if action not in ("start", "speed"):
+                raise ValueError("Ação do motor inválida")
+            with control.condition:
+                if detections or control.snapshot()["busy"]:
+                    raise ValueError("Aguarde a faixa e os acionamentos ficarem vazios para mudar a velocidade")
+                state = motor.command(action, percent)
+                reset_tracking.set()
+                control.pause("velocidade da esteira alterada; confira os tempos de percurso")
+                return state
+
         def apply_changes(changes):
             nonlocal cfg, detector, tracker
             updated = changed_config(cfg, changes)
@@ -85,7 +108,7 @@ def run(cfg, args):
 
         if args.web:
             from panel import Panel
-            panel = Panel(args.port, cfg, apply_changes)
+            panel = Panel(args.port, cfg, apply_changes, motor_command=motor_command, motor_status=motor.status)
             stack.callback(panel.close)
             log.info("PAINEL: %s", panel.url)
             log.info("Via SSH no notebook: ssh -L %s:127.0.0.1:%s admin@IP_DO_RASPBERRY", args.port, args.port)
@@ -117,6 +140,7 @@ def run(cfg, args):
                     if sensor_ts is None or (last_sensor_ts is not None and sensor_ts <= last_sensor_ts):
                         raise SorterFault("Identificador de quadro ausente ou repetido")
                 except Exception as exc:
+                    motor.stop("Falha na câmera; use Ligar novamente após conferir a esteira")
                     control.pause(str(exc))
                     if panel:
                         panel.message("Sem câmera; tentando reconectar. Confira a correia.")
@@ -134,14 +158,24 @@ def run(cfg, args):
                         time.sleep(.1)
                     continue
                 if last_captured_at is not None and captured_at-last_captured_at > cfg["timing"]["camera_timeout_s"]:
+                    motor.stop("Lacuna na captura; confira a esteira antes de ligar novamente")
                     control.pause("lacuna na captura")
                     tracker = Tracker(cfg["vision"])
+                if reset_tracking.is_set():
+                    tracker = Tracker(cfg["vision"])
+                    reset_tracking.clear()
                 last_sensor_ts, last_captured_at = sensor_ts, captured_at
                 control.beat()
                 detections = detector.detect(frame)
                 for color, first_seen in tracker.update(detections, captured_at):
-                    destination, result = control.submit(color, first_seen)
+                    if motor.cfg["enabled"] and not motor.status()["running"]:
+                        with control.condition:
+                            control.counts[color] += 1
+                        destination, result = "sem desvio", "esteira parada; leitura continua"
+                    else:
+                        destination, result = control.submit(color, first_seen)
                     log.info("Tampinha %s -> %s | %s", color, destination, result)
+                motor.beat(tracker.ready)
                 frames += 1
                 now = time.monotonic()
                 if now >= report_at:
@@ -163,6 +197,7 @@ def run(cfg, args):
                     if cv2.waitKey(1) & 0xff == ord("q"):
                         stop = True
         finally:
+            motor.stop("Programa encerrado")
             control.pause("encerramento")
             if camera is not None:
                 camera.close()
@@ -233,6 +268,14 @@ def main(argv=None):
     p.add_argument("--recolhido", type=int)
     p.add_argument("--desvio", type=int)
     sub.add_parser("config", help="Mostra área, GPIO e tempos salvos")
+    p = sub.add_parser("motor", help="Configura a ponte L298N sem ligar o motor; encerre run antes")
+    p.add_argument("action", choices=("configurar", "desativar"))
+    p.add_argument("--canal", choices=("A", "B"), default="A")
+    p.add_argument("--pwm", type=int, default=17)
+    p.add_argument("--in1", type=int, default=27)
+    p.add_argument("--in2", type=int, default=22)
+    p.add_argument("--inverter", action="store_true")
+    p.add_argument("--sentido-fixo", action="store_true", help="IN1/IN2 já definidos externamente; controla somente ENA/ENB")
     p = sub.add_parser("photo", help="Uma foto anotada, sem movimentar os servos")
     p.add_argument("--output", default="calibracao.jpg")
     p = sub.add_parser("learn", help="Aprende a faixa HSV de uma tampinha parada na ROI")
@@ -254,7 +297,7 @@ def main(argv=None):
     try:
         cfg = load_config(args.config)
         if args.command == "config":
-            print(json.dumps({"roi": cfg["vision"]["roi"], "servos": cfg["servos"]}, indent=2, ensure_ascii=False))
+            print(json.dumps({"roi": cfg["vision"]["roi"], "servos": cfg["servos"], "motor": cfg.get("motor", {"enabled": False})}, indent=2, ensure_ascii=False))
             return 0
         if args.command == "check":
             import shutil
@@ -278,6 +321,15 @@ def main(argv=None):
         with process_lock():
             if args.command == "run":
                 run(cfg, args)
+            elif args.command == "motor":
+                from motor import validate_motor
+                settings = dict(cfg.get("motor", {}), enabled=False) if args.action == "desativar" else {
+                    "enabled": True, "channel": args.canal, "pwm_gpio": args.pwm,
+                    "in1_gpio": args.in1, "in2_gpio": args.in2, "reverse": args.inverter,
+                    "direction_control": "fixed" if args.sentido_fixo else "gpio"}
+                cfg["motor"] = validate_motor(settings, cfg["servos"])
+                save_config(args.config, cfg)
+                log.info("Motor configurado, sem partida: %s. Ao abrir run --live --web, use Ligar no painel", cfg["motor"])
             elif args.command == "ajustar":
                 from settings import changed_config
                 fields = {key: getattr(args, name) for name, key in {
@@ -310,7 +362,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         return 0
     except Exception as exc:
-        log.error("INTERROMPIDO: %s. PARE A ESTEIRA; o programa não controla o motor dela.", exc)
+        log.error("INTERROMPIDO: %s. Confira fisicamente a parada da esteira e dos braços.", exc)
         return 1
 
 

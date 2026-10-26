@@ -1,5 +1,9 @@
 # Esteira separadora de tampinhas — Raspberry Pi 3B
 
+O controle opcional L298N de 26/10/2026 é descrito em
+[CONTROLE-DO-MOTOR.md](CONTROLE-DO-MOTOR.md). As referências abaixo ao motor externo
+se aplicam ao funcionamento sem o bloco `motor` habilitado no config.json.
+
 Para a rotina contínua de 19/10/2026 e seus comandos de painel/tempos/área,
 consulte primeiro [TESTE-NA-ESTEIRA.md](TESTE-NA-ESTEIRA.md).
 

@@ -1,5 +1,9 @@
 # Esteira separadora de tampinhas
 
+**26/10/2026: controle opcional do motor com L298N.** O painel inclui potência PWM,
+Ligar e Parar. Começa parado, sem religar automaticamente após falha da câmera.
+Veja [CONTROLE-DO-MOTOR.md](CONTROLE-DO-MOTOR.md) para ligação e configuração.
+
 **Atualização de 19/10/2026:** execução contínua, rastreamento de múltiplos componentes,
 servos com falhas isoladas e painel de câmera/área/tempos. Comece pelo
 [guia para testar com a correia funcionando](TESTE-NA-ESTEIRA.md).
@@ -96,7 +100,7 @@ pista e reduza a exposição para evitar borrões. Recalibre as cores após esse
 
 Alimente os servos por fonte externa adequada, com o negativo conectado ao GND
 do Raspberry. O motor da correia usa seu próprio driver e comando; este código
-não controla nem interrompe esse motor.
+controla esse motor somente quando a ponte L298N está configurada conforme CONTROLE-DO-MOTOR.md.
 
 Teste primeiro o reconhecimento sem acionar GPIO:
 

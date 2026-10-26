@@ -201,7 +201,7 @@ class Servos:
         if not dry_run:
             try:
                 import pigpio
-                self.pi = pigpio.pi("127.0.0.1", 8888)
+                self.pi = pigpio.pi("localhost", 8888)
                 if not self.pi.connected:
                     self.pi.stop()
                     self.pi = None

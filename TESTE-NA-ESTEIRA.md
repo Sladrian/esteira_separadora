@@ -3,7 +3,9 @@
 Esta versão roda até Ctrl+C, ou em segundo plano mesmo após fechar o SSH.
 Reconhece componentes separados simultaneamente dentro do retângulo branco e
 acompanha cada um por posição. Uma cor desconhecida não encerra a leitura.
-O programa não liga, regula ou desliga o motor da correia.
+O motor pode ser regulado pelo painel quando o controle L298N está configurado.
+Veja [CONTROLE-DO-MOTOR.md](CONTROLE-DO-MOTOR.md). Sem essa configuração, o comando
+da correia continua externo, como na versão original.
 
 Validação no notebook: **83 testes automáticos passaram**, incluindo múltiplas cores,
 falha de servo, recuperação da câmera, painel HTTP e atualização com preservação de

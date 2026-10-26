@@ -10,12 +10,13 @@ from urllib.parse import urlsplit
 
 
 class Panel:
-    def __init__(self, port, cfg, apply):
+    def __init__(self, port, cfg, apply, motor_command=None, motor_status=None):
         self.lock = threading.Lock()
         self.cfg = copy.deepcopy(cfg)
         self.info = {}
         self.jpeg = None
         self.apply = apply
+        self.motor_command, self.motor_status = motor_command, motor_status
         self.commands = queue.Queue(maxsize=4)
         self.token = secrets.token_urlsafe(18)
         owner = self
@@ -45,6 +46,8 @@ class Panel:
                 elif route == "status":
                     with owner.lock:
                         data = dict(owner.info, config=owner.cfg)
+                    if owner.motor_status:
+                        data["motor"] = owner.motor_status()
                     self.reply(json.dumps(data, ensure_ascii=False).encode())
                 elif route == "frame":
                     with owner.lock:
@@ -54,7 +57,8 @@ class Panel:
                     self.send_error(404)
 
             def do_POST(self):
-                if self.route() != "settings":
+                route = self.route()
+                if route not in ("settings", "motor"):
                     self.send_error(404)
                     return
                 origin = self.headers.get("Origin")
@@ -65,7 +69,14 @@ class Panel:
                     length = int(self.headers.get("Content-Length", "0"))
                     if not 0 < length <= 8192:
                         raise ValueError("Tamanho inválido")
-                    command = {"changes": json.loads(self.rfile.read(length)), "done": threading.Event(),
+                    changes = json.loads(self.rfile.read(length))
+                    if route == "motor":
+                        if not owner.motor_command or not isinstance(changes, dict) or not set(changes) <= {"action", "percent"}:
+                            raise ValueError("Controle do motor não disponível ou comando inválido")
+                        state = owner.motor_command(changes.get("action"), changes.get("percent", 0))
+                        self.reply(json.dumps({"motor": state}, ensure_ascii=False).encode())
+                        return
+                    command = {"changes": changes, "done": threading.Event(),
                                "cancelled": False, "lock": threading.Lock()}
                     owner.commands.put_nowait(command)
                     if not command["done"].wait(5):

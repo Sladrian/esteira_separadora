@@ -69,7 +69,7 @@ def main():
             os.kill(state["pid"], signal.SIGTERM)
             for _ in range(100):
                 if not running(state):
-                    print("Programa encerrado. A correia tem comando separado.")
+                    print("Programa encerrado. Confira fisicamente a parada da esteira e dos braços.")
                     return 0
                 time.sleep(.1)
             print("Encerramento solicitado; câmera ainda está liberando recursos. Confira status.")
