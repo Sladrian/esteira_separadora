@@ -1,5 +1,5 @@
 """Rastreamento limitado e acionamentos independentes para operação contínua."""
-from collections import Counter
+from collections import Counter, deque
 import copy
 import heapq
 import logging
@@ -93,6 +93,11 @@ class ContinuousController:
         self.active = {}
         self.counts = Counter()
         self.skipped = Counter()
+        self.sorted_counts = Counter()
+        self.recent_sorted = deque(maxlen=1800)
+        self.pending_sorted = {}
+        self.session_started = time.time()
+        self.session_clock = time.monotonic()
         self.next_id = 0
         self.heartbeat = time.monotonic()
         self.suspended = False
@@ -118,14 +123,45 @@ class ContinuousController:
             result = self.driver.set_pulse(side, pulse)
             if result is False:
                 self.skipped["servo_indisponivel"] += 1
+                return False
+            return True
         except Exception as exc:
             self.skipped["erro_servo"] += 1
             log.warning("Servo %s indisponível: %s; leitura continua", side, exc)
+            return False
+
+    def _record_sorted(self, label, now):
+        self.sorted_counts[label] += 1
+        second = int(self.session_started + now - self.session_clock)
+        if self.recent_sorted and self.recent_sorted[-1][0] == second:
+            self.recent_sorted[-1][1] += 1
+        else:
+            self.recent_sorted.append([second, 1])
+
+    def production_snapshot(self):
+        with self.condition:
+            elapsed = time.monotonic() - self.session_clock
+            now = self.session_started + elapsed
+            minute = int(now) // 60 * 60
+            first_minute = minute - 29 * 60
+            bars = [0] * 30
+            window = min(elapsed, 300)
+            recent = 0
+            for second, count in self.recent_sorted:
+                if second >= first_minute:
+                    bars[(second - first_minute) // 60] += count
+                if second >= int(now - window):
+                    recent += count
+            counts = {name: self.sorted_counts[name] for name in self.cfg["vision"]["colors"]}
+            return {"counts": counts, "total": sum(counts.values()), "started": self.session_started,
+                    "updated": now, "first_minute": first_minute, "bars": bars,
+                    "window_seconds": window, "rate": round(recent * 3600 / window) if window >= 60 else None}
 
     def _park(self):
         for side, settings in self.cfg["servos"].items():
             self._pulse(side, settings["rest_us"])
         self.active.clear()
+        self.pending_sorted.clear()
 
     def pause(self, reason):
         with self.condition:
@@ -179,6 +215,9 @@ class ContinuousController:
                         blocked.add(side)
                         self.queue = [event for event in self.queue if not (event[2] == side and event[4] == old["id"])]
                         heapq.heapify(self.queue)
+                        pending = self.pending_sorted.get(old["id"])
+                        if pending and pending[0] == side:
+                            self.pending_sorted.pop(old["id"], None)
                         if self.active.get(side) == old["id"]:
                             self._pulse(side, self.cfg["servos"][side]["rest_us"])
                             self.active.pop(side, None)
@@ -191,6 +230,8 @@ class ContinuousController:
                 return dest, "fila cheia; sem acionamento"
             self.passages.append({"id": ident, "windows": windows, "end": max(w[2] for w in windows.values())})
             if dest == "reto":
+                if entry and not self.suspended and not blocked:
+                    self._record_sorted(label, now)
                 return dest, "sem desvio"
             start, end, _ = windows[dest]
             if self.suspended or dest in blocked or start < now:
@@ -206,6 +247,7 @@ class ContinuousController:
             # Id antes do lado desempata eventos simultâneos sem comparar objetos.
             heapq.heappush(self.queue, (start, ident*2, dest, settings["push_us"], ident, True))
             heapq.heappush(self.queue, (end, ident*2+1, dest, settings["rest_us"], ident, False))
+            self.pending_sorted[ident] = (dest, label)
             self.condition.notify_all()
             return dest, f"desvio em {start-now:.2f}s; recolhe em {end-now:.2f}s"
 
@@ -220,12 +262,18 @@ class ContinuousController:
                         due, _, side, pulse, ident, pushing = heapq.heappop(self.queue)
                         if pushing and now-due > self.cfg["timing"]["max_lateness_s"]:
                             self.skipped["acionamento_atrasado"] += 1
+                            self.pending_sorted.pop(ident, None)
                             log.warning("Desvio %s atrasado; descartado, leitura continua", side)
                             continue
-                        self._pulse(side, pulse)
+                        sent = self._pulse(side, pulse)
                         if pushing:
                             self.active[side] = ident
+                            if not sent:
+                                self.pending_sorted.pop(ident, None)
                         else:
+                            pending = self.pending_sorted.pop(ident, None)
+                            if pending and sent and self.active.get(side) == ident:
+                                self._record_sorted(pending[1], time.monotonic())
                             self.active.pop(side, None)
                         continue
                     delay = .05 if not self.queue else min(.05, max(0, self.queue[0][0]-now))

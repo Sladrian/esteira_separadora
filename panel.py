@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 
 class Panel:
-    def __init__(self, port, cfg, apply, motor_command=None, motor_status=None):
+    def __init__(self, port, cfg, apply, motor_command=None, motor_status=None, production=None):
         self.lock = threading.Lock()
         self.cfg = copy.deepcopy(cfg)
         self.info = {}
@@ -43,9 +43,22 @@ class Panel:
                 route = self.route()
                 if route == "":
                     self.reply(Path(__file__).with_name("panel.html").read_bytes(), "text/html; charset=utf-8")
+                elif route == "dashboard" and production:
+                    self.reply(Path(__file__).with_name("dashboard.html").read_bytes(), "text/html; charset=utf-8")
+                elif route == "production" and production:
+                    with owner.lock:
+                        ready = owner.info.get("production_ready", False)
+                    data = production()
+                    motor = owner.motor_status() if owner.motor_status else {}
+                    if not ready or (motor.get("configured") and not motor.get("running")):
+                        data.update(state="stopped", rate=None)
+                    else:
+                        data["state"] = "simulation" if motor.get("simulated") else (
+                            "running" if motor.get("configured") else "reading")
+                    self.reply(json.dumps(data, ensure_ascii=False).encode())
                 elif route == "status":
                     with owner.lock:
-                        data = dict(owner.info, config=owner.cfg)
+                        data = dict(owner.info, config=owner.cfg, has_dashboard=production is not None)
                     if owner.motor_status:
                         data["motor"] = owner.motor_status()
                     self.reply(json.dumps(data, ensure_ascii=False).encode())
@@ -123,6 +136,7 @@ class Panel:
     def message(self, text):
         with self.lock:
             self.info["message"] = text
+            self.info["production_ready"] = False
 
     def close(self):
         self.server.shutdown()

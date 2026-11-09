@@ -1,5 +1,30 @@
 # Esteira separadora de tampinhas
 
+## Painel de produção
+
+Com a esteira parada e o programa encerrado, extraia o ZIP de atualização em
+uma pasta separada e execute, a partir dessa pasta:
+
+```bash
+python3 atualizar.py ~/esteira-separadora
+```
+
+Se a instalação estiver em outra pasta, informe o caminho dela. O atualizador
+valida o pacote, faz backup e preserva o `config.json` da instalação.
+
+Inicie a esteira com a opção `--web`, abra o endereço `PAINEL` informado no
+terminal e clique em **Ver painel de produção**. O dashboard roda no mesmo
+servidor local, com o mesmo acesso via túnel SSH. Ele atualiza a cada dois
+segundos e usa apenas arquivos locais.
+
+O painel mostra rosa, verde e azul, o total da sessão, o ritmo projetado pela
+janela recente de até cinco minutos e as barras dos últimos 30 minutos. As
+contagens reiniciam quando o programa é reiniciado. Os desvios são registrados
+após o ciclo de comando do servo. A rota reta é registrada pela classificação
+da tampinha, sem confirmação física de chegada.
+
+## Projeto
+
 **26/10/2026: controle opcional do motor com L298N.** O painel inclui potência PWM,
 Ligar e Parar. Começa parado, sem religar automaticamente após falha da câmera.
 Veja [CONTROLE-DO-MOTOR.md](CONTROLE-DO-MOTOR.md) para ligação e configuração.

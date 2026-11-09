@@ -111,7 +111,8 @@ def run(cfg, args):
 
         if args.web:
             from panel import Panel
-            panel = Panel(args.port, cfg, apply_changes, motor_command=motor_command, motor_status=motor.status)
+            panel = Panel(args.port, cfg, apply_changes, motor_command=motor_command,
+                          motor_status=motor.status, production=control.production_snapshot)
             stack.callback(panel.close)
             log.info("PAINEL: %s", panel.url)
             log.info("Via SSH no notebook: ssh -L %s:127.0.0.1:%s admin@IP_DO_RASPBERRY", args.port, args.port)
@@ -191,7 +192,8 @@ def run(cfg, args):
                         state = control.snapshot()
                         state.update(message="Leitura ativa" if tracker.ready else (
                             "Câmera ativa; pode ligar a esteira com objetos na faixa" if motor.cfg["enabled"] else "Aguardando faixa vazia para iniciar"),
-                                     fps=round(frames/max(.01, now-started), 1), servos=servos.status())
+                                     fps=round(frames/max(.01, now-started), 1), servos=servos.status(),
+                                     production_ready=not state["suspended"] and tracker.ready)
                         if state["suspended"]:
                             state["message"] = "Leitura ativa; aguardando as estações liberarem para voltar a desviar"
                         panel.publish(annotate_objects(frame, cfg["vision"]["roi"], detections), state)

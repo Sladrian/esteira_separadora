@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Painel da esteira</title>
+  <style>
+    * { box-sizing: border-box }
+    body { margin: 0; background: #161826; color: #e9e9ed; font: 16px system-ui, sans-serif; font-variant-numeric: tabular-nums }
+    main { max-width: 1600px; margin: auto; padding: 24px clamp(16px, 3vw, 40px) 32px; display: grid; gap: 16px }
+    header, .heading, .times, .value { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px }
+    h1, h2, p { margin: 0 }
+    h1 { font-size: 28px; font-weight: 600 }
+    h2 { font-size: 18px; font-weight: 600 }
+    a { color: #d2cefd }
+    .times { margin-left: auto }
+    .muted { font-size: 14px; color: #b2b6ca }
+    .state { border: 1px solid currentColor; border-radius: 999px; padding: 5px 12px; color: #f4b19c; background: #3b2527; font-weight: 600 }
+    .state[data-state="running"] { color: #a6e685; background: #293b2c }
+    .state[data-state="reading"], .state[data-state="simulation"] { color: #ddcbff; background: #342c48 }
+    .metrics, .types { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)) }
+    .types { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)) }
+    .card { min-width: 0; display: grid; gap: 8px; padding: 18px clamp(16px, 2vw, 24px); border: 1px solid #3f424d; border-radius: 8px; background: #232532 }
+    .metric-title, .unit { color: #cfd3e5 }
+    .value { align-items: baseline; gap: 6px 10px }
+    .number, .count { font-size: clamp(48px, 7vw, 88px); font-weight: 500; line-height: 1; letter-spacing: -.03em; color: #f3f5fe; overflow-wrap: anywhere }
+    .number.compact { font-size: clamp(28px, 5vw, 46px) }
+    .unit { font-size: clamp(18px, 2vw, 24px) }
+    .count { font-size: clamp(44px, 5vw, 64px) }
+    .count.zero { color: #a5a9bc }
+    .type-name { display: flex; align-items: center; gap: 12px; font-size: 20px }
+    .dot { width: 18px; height: 18px; flex: none; border-radius: 50%; background: var(--swatch); box-shadow: 0 0 0 2px #161826, 0 0 0 3px var(--swatch) }
+    .chart { gap: 16px }
+    .plot { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 10px }
+    .scale { display: flex; flex-direction: column; justify-content: space-between; text-align: right; font-size: 13px }
+    .bars { position: relative; display: grid; grid-template-columns: repeat(30, minmax(0, 1fr)); align-items: end; gap: clamp(1px, .35vw, 3px); height: 200px; border-bottom: 1px solid #75798c; border-top: 1px dashed #3f424d }
+    .bars::before { content: ""; position: absolute; inset: 50% 0 auto; border-top: 1px dashed #3f424d }
+    .bar { position: relative; border-radius: 2px 2px 0 0; background: #9184d9 }
+    .ticks { grid-column: 2; display: flex; justify-content: space-between; gap: 3px; font-size: 13px }
+    footer { max-width: 820px; line-height: 1.5 }
+    @media (max-width: 650px) {
+      .times { width: 100%; margin-left: 0 }
+      .bars { height: 150px }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Painel da esteira</h1>
+      <span class="state" id="state" role="status">Conectando…</span>
+      <div class="times muted">
+        <span id="session"></span>
+        <span id="updated"></span>
+        <a href="./">Ajustes e câmera</a>
+      </div>
+    </header>
+    <section class="metrics" aria-label="Indicadores da sessão">
+      <article class="card">
+        <h2 class="metric-title">Total de tampinhas separadas</h2>
+        <div class="value"><span class="number" id="total">—</span><span class="unit">tampinhas</span></div>
+        <p class="muted">Soma dos três tipos na sessão atual</p>
+      </article>
+      <article class="card">
+        <h2 class="metric-title">Ritmo estimado da esteira</h2>
+        <div class="value"><span class="number" id="rate">—</span><span class="unit" id="rate-unit"></span></div>
+        <p class="muted" id="rate-note">Aguardando dados</p>
+      </article>
+    </section>
+    <section class="types" id="types" aria-label="Tampinhas por tipo"></section>
+    <section class="card chart" aria-labelledby="chart-heading">
+      <div class="heading">
+        <h2 id="chart-heading">Ritmo da esteira</h2>
+        <p class="muted">Tampinhas separadas por minuto · últimos 30 minutos</p>
+      </div>
+      <div class="plot">
+        <div class="scale muted" aria-hidden="true"><span id="max">10</span><span id="mid">5</span><span>0</span></div>
+        <div class="bars" id="bars" role="img" aria-label="Aguardando dados de produção"></div>
+        <div class="ticks muted" id="ticks" aria-hidden="true"></div>
+      </div>
+    </section>
+    <footer class="muted">Contagem por desvio registrado ou passagem prevista em linha reta, sem confirmação física. Leituras desconhecidas e desvios cancelados ficam fora do total.</footer>
+  </main>
+  <script>
+    const byId = id => document.getElementById(id);
+    const number = new Intl.NumberFormat('pt-BR');
+    const clock = new Intl.DateTimeFormat('pt-BR', {hour: '2-digit', minute: '2-digit'});
+    const secondsClock = new Intl.DateTimeFormat('pt-BR', {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+    const swatches = {rosa: '#e886b1', verde: '#80d296', azul: '#76a8f0'};
+    const states = {stopped: 'Parada', running: 'Em operação', reading: 'Leitura ativa', simulation: 'Simulação'};
+    const cards = new Map();
+    const bars = Array.from({length: 30}, () => {
+      const bar = document.createElement('span');
+      bar.className = 'bar';
+      byId('bars').append(bar);
+      return bar;
+    });
+    const ticks = [0, 10, 20, 29].map(index => {
+      const tick = document.createElement('span');
+      byId('ticks').append(tick);
+      return {index, tick};
+    });
+
+    function status(state, text) {
+      const badge = byId('state');
+      badge.dataset.state = state;
+      if (badge.textContent !== text) badge.textContent = text;
+    }
+
+    function typeCounts(counts) {
+      const labels = [...new Set([...Object.keys(swatches), ...Object.keys(counts)])].filter(label => Object.hasOwn(counts, label));
+      for (const [label, card] of cards) {
+        if (!Object.hasOwn(counts, label)) {
+          card.article.remove();
+          cards.delete(label);
+        }
+      }
+      for (const label of labels) {
+        if (!cards.has(label)) {
+          const article = document.createElement('article');
+          const heading = document.createElement('h2');
+          const dot = document.createElement('span');
+          const count = document.createElement('div');
+          article.className = 'card';
+          heading.className = 'type-name';
+          dot.className = 'dot';
+          dot.style.setProperty('--swatch', Object.hasOwn(swatches, label) ? swatches[label] : '#b2b6ca');
+          dot.setAttribute('aria-hidden', 'true');
+          heading.append(dot, 'Tampinha ' + label);
+          count.className = 'count';
+          article.append(heading, count);
+          byId('types').append(article);
+          cards.set(label, {article, count});
+        }
+        const count = cards.get(label).count;
+        count.textContent = number.format(counts[label]);
+        count.classList.toggle('zero', counts[label] === 0);
+      }
+    }
+
+    function show(data) {
+      status(data.state, states[data.state]);
+      byId('session').textContent = 'Sessão atual desde ' + clock.format(data.started * 1000);
+      byId('updated').textContent = 'Atualizado às ' + secondsClock.format(data.updated * 1000);
+      byId('total').textContent = number.format(data.total);
+      const stopped = data.state === 'stopped';
+      const calculating = !stopped && data.rate === null;
+      byId('rate').textContent = stopped ? '—' : calculating ? 'Calculando…' : number.format(data.rate);
+      byId('rate').classList.toggle('compact', calculating);
+      byId('rate-unit').textContent = stopped || calculating ? '' : 'tampinhas/h';
+      const minutes = Math.floor(data.window_seconds / 60);
+      byId('rate-note').textContent = stopped ? 'Esteira parada' : calculating ? 'Disponível após o primeiro minuto' :
+        minutes === 5 ? 'Com base nos últimos 5 min' : 'Com base no tempo decorrido da sessão';
+      typeCounts(data.counts);
+      const max = Math.max(10, Math.ceil(Math.max(...data.bars) / 10) * 10);
+      byId('max').textContent = number.format(max);
+      byId('mid').textContent = number.format(max / 2);
+      const labels = data.bars.map((count, index) => {
+        const time = clock.format((data.first_minute + index * 60) * 1000);
+        bars[index].style.height = (count / max * 100) + '%';
+        return bars[index].title = time + ' · ' + number.format(count) + ' tampinhas';
+      });
+      byId('bars').setAttribute('aria-label', labels.join('; '));
+      for (const {index, tick} of ticks) {
+        tick.textContent = clock.format((data.first_minute + index * 60) * 1000);
+      }
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch('production', {cache: 'no-store', signal: AbortSignal.timeout(5000)});
+        if (!response.ok) throw new Error('Dados indisponíveis');
+        show(await response.json());
+      } catch {
+        status('offline', 'Sem conexão');
+        byId('rate').textContent = '—';
+        byId('rate-unit').textContent = '';
+        byId('rate-note').textContent = 'Aguardando conexão com a esteira';
+      } finally {
+        setTimeout(refresh, 2000);
+      }
+    }
+    refresh();
+  </script>
+</body>
+</html>
